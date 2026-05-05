@@ -1,19 +1,18 @@
-[project]
+[tool.poetry]
 name = "inbound-check-streamlit"
 version = "0.1.0"
 description = ""
 package-mode = false
 authors = [
-    {name = "Paulo Cardoso",email = "cardosopaulohenrique91@gmail.com"}
+    {name = "Paulo Cardoso", email = "cardosopaulohenrique91@gmail.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-    "pandas (>=3.0.2,<4.0.0)",
-    "streamlit (>=1.57.0,<2.0.0)",
-    "openpyxl (>=3.1.5,<4.0.0)"
-]
 
+[tool.poetry.dependencies]
+python = ">=3.12"
+pandas = ">=3.0.2,<4.0.0"
+streamlit = ">=1.57.0,<2.0.0"
+openpyxl = ">=3.1.5,<4.0.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
