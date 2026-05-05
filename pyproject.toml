@@ -2,6 +2,7 @@
 name = "inbound-check-streamlit"
 version = "0.1.0"
 description = ""
+package-mode = false
 authors = [
     {name = "Paulo Cardoso",email = "cardosopaulohenrique91@gmail.com"}
 ]
