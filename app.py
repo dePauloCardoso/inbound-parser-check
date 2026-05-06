@@ -167,7 +167,6 @@ def check_unicidade_xped(df: pd.DataFrame) -> pd.DataFrame:
     Retorna um DataFrame com as NFs que possuem mais de um xPed distinto,
     listando quais pedidos aparecem em cada uma.
     """
-    # Agrupa por NF e coleta os valores únicos de xPed (ignora vazios)
     resumo = (
         df[df["xPed"].str.strip() != ""]
         .groupby(["arquivo", "numero_nf"])["xPed"]
@@ -298,11 +297,11 @@ def comparar_nfe_po(df_nfe: pd.DataFrame, df_po: pd.DataFrame) -> pd.DataFrame:
             else f"❌ Material divergente — NF: {cprod} | PO: {po_material}"
         )
 
-                # ── Check quantidade ──────────────────────────────────────────────────
-        # qCom == Qtd.pedido                                     → OK
-        # qCom <  Qtd.pedido  E  Qtd. a fornecer == 0           → OK (entrega parcial)
-        # qCom <  Qtd.pedido  E  qCom <= Qtd. a fornecer        → OK (entrega parcial)
-        # qualquer outro caso                                    → ERRO
+        # ── Check quantidade ──────────────────────────────────────────────────
+        # qCom == Qtd.pedido                                   → OK
+        # qCom <  Qtd.pedido  E  Qtd. a fornecer == 0         → OK (entrega parcial)
+        # qCom <  Qtd.pedido  E  qCom <= Qtd. a fornecer      → OK (entrega parcial)
+        # qualquer outro caso                                  → ERRO
         if qcom is not None and po_qtd is not None:
             qcom_f = float(qcom)
 
@@ -433,7 +432,7 @@ with aba_parser:
                                 use_container_width=True,
                             )
 
-                # ── Check unicidade xPed ──────────────────────────────────
+                # ── Check unicidade xPed ──────────────────────────────────────
                 divergentes_xped = check_unicidade_xped(df)
                 if not divergentes_xped.empty:
                     with st.expander(
@@ -544,6 +543,24 @@ with aba_po:
             df_po     = carregar_pedidos(po_file)
             df_result = comparar_nfe_po(df_nfe, df_po)
 
+        # ── Check unicidade xPed na aba 2 ─────────────────────────────────────
+        divergentes_xped = check_unicidade_xped(df_nfe)
+        if not divergentes_xped.empty:
+            with st.expander(
+                f"⚠️ {len(divergentes_xped)} NF(s) com mais de um xPed distinto",
+                expanded=True,
+            ):
+                st.warning(
+                    "As NFs abaixo possuem itens referenciando pedidos de compra diferentes. "
+                    "O comparativo pode conter resultados mistos para essas NFs."
+                )
+                st.dataframe(divergentes_xped, use_container_width=True)
+        else:
+            st.success("✅ Pedido único em todas as NFs.")
+
+        st.divider()
+
+        # ── Resumo ────────────────────────────────────────────────────────────
         total       = len(df_result)
         ok_material = df_result["check_material"].str.startswith("✅").sum()
         ok_qtd      = df_result["check_qtd"].str.startswith("✅").sum()
