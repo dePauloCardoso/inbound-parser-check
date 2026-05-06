@@ -17,7 +17,6 @@ def carregar_sku_set():
     if not SKU_FILE.exists():
         return set(), pd.DataFrame()
     try:
-        # Tenta detectar separador automaticamente (cobre vírgula e ponto-e-vírgula)
         df = pd.read_csv(SKU_FILE, dtype=str, sep=None, engine="python")
     except Exception:
         df = pd.read_csv(SKU_FILE, dtype=str, sep=",")
@@ -158,6 +157,29 @@ def resolver_skus(df, sku_set):
     df["cProd"]      = resultado["cProd"]
     df["sku_origem"] = resultado["sku_origem"]
     return df
+
+
+# ─── Check unicidade xPed ─────────────────────────────────────────────────────
+
+def check_unicidade_xped(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Verifica se o campo xPed é único dentro de cada NF-e (agrupado por numero_nf).
+    Retorna um DataFrame com as NFs que possuem mais de um xPed distinto,
+    listando quais pedidos aparecem em cada uma.
+    """
+    # Agrupa por NF e coleta os valores únicos de xPed (ignora vazios)
+    resumo = (
+        df[df["xPed"].str.strip() != ""]
+        .groupby(["arquivo", "numero_nf"])["xPed"]
+        .agg(lambda x: sorted(x.unique().tolist()))
+        .reset_index()
+        .rename(columns={"xPed": "xPed_valores"})
+    )
+    resumo["qtd_pedidos_distintos"] = resumo["xPed_valores"].apply(len)
+    resumo["xPed_valores"]          = resumo["xPed_valores"].apply(lambda v: " | ".join(v))
+
+    divergentes = resumo[resumo["qtd_pedidos_distintos"] > 1].copy()
+    return divergentes
 
 
 # ─── Pedidos de Compra ────────────────────────────────────────────────────────
@@ -403,6 +425,21 @@ with aba_parser:
                                 df[df["sku_origem"] == "não resolvido"][["n_item", "cProd", "xProd"]],
                                 use_container_width=True,
                             )
+
+                # ── Check unicidade xPed ──────────────────────────────────
+                divergentes_xped = check_unicidade_xped(df)
+                if not divergentes_xped.empty:
+                    with st.expander(
+                        f"⚠️ {len(divergentes_xped)} NF(s) com mais de um xPed distinto",
+                        expanded=True,
+                    ):
+                        st.warning(
+                            "As NFs abaixo possuem itens referenciando pedidos de compra diferentes. "
+                            "Verifique se isso é esperado antes de prosseguir."
+                        )
+                        st.dataframe(divergentes_xped, use_container_width=True)
+                else:
+                    st.success("✅ xPed único em todas as NFs processadas.")
 
                 st.success(
                     f"{len(uploaded_files) - len(erros)} arquivo(s) processado(s) "
