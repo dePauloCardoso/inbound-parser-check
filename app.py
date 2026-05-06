@@ -16,7 +16,11 @@ SKU_FILE    = Path(__file__).parent / "skuProd.csv"
 def carregar_sku_set():
     if not SKU_FILE.exists():
         return set(), pd.DataFrame()
-    df      = pd.read_csv(SKU_FILE, dtype=str)
+    try:
+        # Tenta detectar separador automaticamente (cobre vírgula e ponto-e-vírgula)
+        df = pd.read_csv(SKU_FILE, dtype=str, sep=None, engine="python")
+    except Exception:
+        df = pd.read_csv(SKU_FILE, dtype=str, sep=",")
     col_sku = df.columns[0]
     sku_set = set(df[col_sku].dropna().str.strip().str.upper().tolist())
     return sku_set, df
@@ -51,22 +55,15 @@ def extrair_sku_do_xprod(xprod, sku_set):
     """
     if not xprod:
         return None
-
-    # Remove underscores substituindo por espaço, depois normaliza
     xprod_normalizado = xprod.replace("_", " ").strip().upper()
-
-    # Tenta token a token
     tokens = xprod_normalizado.split()
     for token in tokens:
         token_clean = re.sub(r'[^A-Z0-9]', '', token)
         if len(token_clean) == 13 and token_clean in sku_set:
             return token_clean
-
-    # Fallback: regex no texto completo após remoção de underscore
     for m in SKU_PATTERN.findall(xprod_normalizado):
         if m in sku_set:
             return m
-
     return None
 
 def normalizar_chave(valor):
@@ -77,10 +74,7 @@ def normalizar_chave(valor):
         return str(valor).strip()
 
 def parse_numero_br(valor_str):
-    """
-    Converte string numérica no padrão brasileiro (1.000,00) para float.
-    Também trata padrão americano (1000.00).
-    """
+    """Converte string numérica no padrão brasileiro (1.000,00) para float."""
     if pd.isna(valor_str) or str(valor_str).strip() == "":
         return None
     s = str(valor_str).strip()
@@ -185,7 +179,6 @@ def carregar_pedidos(file) -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].apply(parse_numero_br)
 
-    # vUnit = Valor líquido da ordem / Qtd.pedido
     if "Valor líquido da ordem" in df.columns and "Qtd.pedido" in df.columns:
         df["vUnit"] = (
             df["Valor líquido da ordem"].astype(float)
@@ -308,7 +301,6 @@ def comparar_nfe_po(df_nfe: pd.DataFrame, df_po: pd.DataFrame) -> pd.DataFrame:
                         f"| Qtd. pedido: {po_qtd:.0f}"
                     )
             else:
-                # qCom > Qtd.pedido
                 check_qtd = (
                     f"❌ Qtd excede o pedido — "
                     f"NF: {qcom_f:.0f} | Qtd. pedido: {po_qtd:.0f}"
@@ -508,7 +500,6 @@ with aba_po:
             df_po     = carregar_pedidos(po_file)
             df_result = comparar_nfe_po(df_nfe, df_po)
 
-        # ── Resumo ────────────────────────────────────────────────────────────
         total       = len(df_result)
         ok_material = df_result["check_material"].str.startswith("✅").sum()
         ok_qtd      = df_result["check_qtd"].str.startswith("✅").sum()
