@@ -298,10 +298,11 @@ def comparar_nfe_po(df_nfe: pd.DataFrame, df_po: pd.DataFrame) -> pd.DataFrame:
             else f"❌ Material divergente — NF: {cprod} | PO: {po_material}"
         )
 
-        # ── Check quantidade ──────────────────────────────────────────────────
-        # qCom == Qtd.pedido                              → OK
-        # qCom <  Qtd.pedido  E  qCom <= Qtd. a fornecer → OK (entrega parcial)
-        # qualquer outro caso                             → ERRO
+                # ── Check quantidade ──────────────────────────────────────────────────
+        # qCom == Qtd.pedido                                     → OK
+        # qCom <  Qtd.pedido  E  Qtd. a fornecer == 0           → OK (entrega parcial)
+        # qCom <  Qtd.pedido  E  qCom <= Qtd. a fornecer        → OK (entrega parcial)
+        # qualquer outro caso                                    → ERRO
         if qcom is not None and po_qtd is not None:
             qcom_f = float(qcom)
 
@@ -309,7 +310,13 @@ def comparar_nfe_po(df_nfe: pd.DataFrame, df_po: pd.DataFrame) -> pd.DataFrame:
                 check_qtd = "✅ Qtd OK"
 
             elif qcom_f < po_qtd:
-                if po_qtd_fornecida is not None and qcom_f <= po_qtd_fornecida:
+                if po_qtd_fornecida is not None and po_qtd_fornecida == 0:
+                    check_qtd = (
+                        f"✅ Qtd OK (entrega parcial) — "
+                        f"NF: {qcom_f:.0f} | Qtd. a fornecer: 0 "
+                        f"| Qtd. pedido: {po_qtd:.0f}"
+                    )
+                elif po_qtd_fornecida is not None and qcom_f <= po_qtd_fornecida:
                     check_qtd = (
                         f"✅ Qtd OK (entrega parcial) — "
                         f"NF: {qcom_f:.0f} | Qtd. a fornecer: {po_qtd_fornecida:.0f} "
