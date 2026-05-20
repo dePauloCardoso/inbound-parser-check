@@ -5,34 +5,72 @@ import re
 import io
 from pathlib import Path
 
-NAMESPACE   = {"ns": "http://www.portalfiscal.inf.br/nfe"}
+# --- Constantes ---
+NAMESPACE = {"ns": "http://www.portalfiscal.inf.br/nfe"}
 SKU_PATTERN = re.compile(r'\b[A-Z0-9]{13}\b')
-SKU_FILE    = Path(__file__).parent / "skuProd.csv"
+
+# Caminhos dos arquivos auxiliares.
+# Eles devem estar no mesmo diretório do script Streamlit.
+SKU_FILE = Path(__file__).parent / "skuProd.csv"
 ZZSETE_FILE = Path(__file__).parent / "zzsete.xlsx"
 
 
-# ─── Tabela auxiliar de SKUs ──────────────────────────────────────────────────
-
+# --- Tabela auxiliar de SKUs ---
 @st.cache_data
 def carregar_sku_set():
+    """
+    Carrega o conjunto de SKUs de um arquivo CSV.
+    Retorna um set de SKUs e o DataFrame original.
+    """
     if not SKU_FILE.exists():
+        st.warning(f"Arquivo '{SKU_FILE.name}' não encontrado. A resolução de SKUs pode ser limitada.")
         return set(), pd.DataFrame()
     try:
-        df = pd.read_csv(SKU_FILE, dtype=str, sep=None, engine="python")
-    except Exception:
-        df = pd.read_csv(SKU_FILE, dtype=str, sep=",")
+        # Pandas é geralmente bom em inferir o separador
+        df = pd.read_csv(SKU_FILE, dtype=str)
+    except pd.errors.EmptyDataError:
+        st.warning(f"Arquivo '{SKU_FILE.name}' está vazio. Nenhuma SKU será carregada.")
+        return set(), pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erro ao carregar '{SKU_FILE.name}': {e}")
+        return set(), pd.DataFrame()
+
+    if df.empty:
+        st.warning(f"Arquivo '{SKU_FILE.name}' não contém dados válidos. Nenhuma SKU será carregada.")
+        return set(), pd.DataFrame()
+
+    # Assume que a primeira coluna contém os SKUs
     col_sku = df.columns[0]
-    sku_set = set(df[col_sku].dropna().str.strip().str.upper().tolist())
+    sku_set = set(df[col_sku].dropna().astype(str).str.strip().str.upper().tolist())
     return sku_set, df
 
 
-# ─── Tabela auxiliar de Kits (zzsete) ────────────────────────────────────────
-
+# --- Tabela auxiliar de Kits (zzsete) ---
 @st.cache_data
 def carregar_zzsete():
+    """
+    Carrega a base de kits (zzsete) de um arquivo Excel.
+    Retorna um DataFrame com os dados dos kits.
+    """
     if not ZZSETE_FILE.exists():
+        st.warning(f"Arquivo '{ZZSETE_FILE.name}' não encontrado. As abas de kits não estarão disponíveis.")
         return pd.DataFrame()
-    df = pd.read_excel(ZZSETE_FILE, dtype=str)
+    try:
+        df = pd.read_excel(ZZSETE_FILE, dtype=str)
+    except FileNotFoundError:
+        st.warning(f"Arquivo '{ZZSETE_FILE.name}' não encontrado. As abas de kits não estarão disponíveis.")
+        return pd.DataFrame()
+    except pd.errors.EmptyDataError:
+        st.warning(f"Arquivo '{ZZSETE_FILE.name}' está vazio. Nenhuma base de kits será carregada.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erro ao carregar '{ZZSETE_FILE.name}': {e}")
+        return pd.DataFrame()
+
+    if df.empty:
+        st.warning(f"Arquivo '{ZZSETE_FILE.name}' não contém dados válidos. Nenhuma base de kits será carregada.")
+        return pd.DataFrame()
+
     df.columns = df.columns.str.strip()
     for col in ["ZZ7_CODIGO", "ZZ7_CODPAI", "ZZ7_PRODUT", "ZZ7_SRINK"]:
         if col in df.columns:
@@ -40,9 +78,11 @@ def carregar_zzsete():
     return df
 
 
-# ─── Helpers gerais ───────────────────────────────────────────────────────────
-
-def extrair_nf_retorno(infCpl):
+# --- Helpers gerais ---
+def extrair_nf_retorno(infCpl: str) -> str:
+    """
+    Extrai o número da NF de retorno da informação complementar (infCpl).
+    """
     if not infCpl:
         return ""
     padroes = [
@@ -58,10 +98,16 @@ def extrair_nf_retorno(infCpl):
             return match.group(1)
     return ""
 
-def is_sku(code):
+def is_sku(code: str) -> bool:
+    """
+    Verifica se uma string corresponde ao padrão de SKU (13 caracteres alfanuméricos).
+    """
     return bool(code and re.fullmatch(r'[A-Z0-9]{13}', str(code).strip().upper()))
 
-def extrair_sku_do_xprod(xprod, sku_set):
+def extrair_sku_do_xprod(xprod: str, sku_set: set) -> str | None:
+    """
+    Tenta extrair um SKU de uma descrição de produto (xProd) usando um conjunto de SKUs válidos.
+    """
     if not xprod:
         return None
     xprod_normalizado = xprod.replace("_", " ").strip().upper()
@@ -75,78 +121,123 @@ def extrair_sku_do_xprod(xprod, sku_set):
             return m
     return None
 
-def normalizar_chave(valor):
+def normalizar_chave(valor) -> str:
+    """
+    Normaliza um valor para ser usado como chave (e.g., número de pedido/item).
+    Remove espaços e converte para string, tratando zeros à esquerda para valores numéricos.
+    """
+    if pd.isna(valor) or valor is None:
+        return ""
+    s_valor = str(valor).strip()
     try:
-        return str(int(str(valor).strip()))
+        # Tenta converter para int para remover zeros à esquerda, depois para str
+        # Ex: "00310" -> 310 -> "310"
+        # Ex: "310"   -> 310 -> "310"
+        return str(int(s_valor))
     except (ValueError, TypeError):
-        return str(valor).strip()
+        # Se não for um número (e.g., alfanumérico), retorna a string limpa
+        return s_valor
 
-def parse_numero_br(valor_str):
+def parse_numero_br(valor_str) -> float | None:
+    """
+    Converte uma string de número formatada em português (com vírgula decimal) para float.
+    """
     if pd.isna(valor_str) or str(valor_str).strip() == "":
         return None
     s = str(valor_str).strip()
-    if "," in s:
-        s = s.replace(".", "").replace(",", ".")
-    elif s.count(".") > 1:
-        parts = s.split(".")
-        s = "".join(parts[:-1]) + "." + parts[-1]
+    # Substitui ponto por nada se houver mais de um ponto (milhares)
+    # e vírgula por ponto (decimal)
+    if "," in s and "." in s: # Ex: 1.234,56
+        s = s.replace(".", "")
+        s = s.replace(",", ".")
+    elif "," in s: # Ex: 1234,56
+        s = s.replace(",", ".")
     try:
         return float(s)
     except ValueError:
         return None
 
-def normalizar_kit(val):
-    try:
-        return str(int(float(str(val).strip())))
-    except (ValueError, TypeError):
-        return str(val).strip().upper()
+def normalizar_kit(val) -> str:
+    """
+    Normaliza um valor para ser usado como identificador de kit.
+    """
+    if pd.isna(val) or val is None:
+        return ""
+    return str(val).strip().upper()
 
 
-# ─── Parse XML ────────────────────────────────────────────────────────────────
-
-def parse_nfe_xml(xml_content, filename="arquivo.xml"):
-    root   = ET.fromstring(xml_content)
+# --- Parse XML ---
+def parse_nfe_xml(xml_content: bytes, filename: str = "arquivo.xml") -> list[dict]:
+    """
+    Faz o parse do conteúdo XML de uma NF-e e extrai os dados relevantes.
+    Retorna uma lista de dicionários, onde cada dicionário representa um item da NF-e.
+    """
+    root = ET.fromstring(xml_content)
     infNFe = root.find(".//ns:infNFe", NAMESPACE)
 
-    ide   = infNFe.find("ns:ide",  NAMESPACE)
-    emit  = infNFe.find("ns:emit", NAMESPACE)
-    dest  = infNFe.find("ns:dest", NAMESPACE)
+    if infNFe is None:
+        raise ValueError("Estrutura XML inválida: infNFe não encontrado.")
+
+    ide = infNFe.find("ns:ide", NAMESPACE)
+    emit = infNFe.find("ns:emit", NAMESPACE)
+    dest = infNFe.find("ns:dest", NAMESPACE)
     total = infNFe.find("ns:total/ns:ICMSTot", NAMESPACE)
 
+    if any(elem is None for elem in [ide, emit, dest, total]):
+        raise ValueError("Estrutura XML inválida: Elementos essenciais (ide, emit, dest, total) não encontrados.")
+
     infAdic = infNFe.find("ns:infAdic", NAMESPACE)
-    infCpl  = ""
-    if infAdic is not None:
-        infCpl = infAdic.findtext("ns:infCpl", default="", namespaces=NAMESPACE)
+    infCpl = infAdic.findtext("ns:infCpl", default="", namespaces=NAMESPACE) if infAdic is not None else ""
 
     header = {
-        "arquivo":        filename,
-        "id_nfe":         infNFe.attrib.get("Id"),
-        "numero_nf":      ide.findtext("ns:nNF",   default="", namespaces=NAMESPACE),
-        "serie":          ide.findtext("ns:serie",  default="", namespaces=NAMESPACE),
-        "data_emissao":   ide.findtext("ns:dhEmi",  default="", namespaces=NAMESPACE),
-        "valor_total_nf": total.findtext("ns:vNF",  default="", namespaces=NAMESPACE),
-        "emit_cnpj":      emit.findtext("ns:CNPJ",  default="", namespaces=NAMESPACE),
-        "emit_nome":      emit.findtext("ns:xNome", default="", namespaces=NAMESPACE),
-        "dest_cnpj":      dest.findtext("ns:CNPJ",  default="", namespaces=NAMESPACE),
-        "dest_nome":      dest.findtext("ns:xNome", default="", namespaces=NAMESPACE),
-        "infCpl":         infCpl,
-        "ret_nf":         extrair_nf_retorno(infCpl),
+        "arquivo": filename,
+        "id_nfe": infNFe.attrib.get("Id", ""),
+        "numero_nf": ide.findtext("ns:nNF", default="", namespaces=NAMESPACE),
+        "serie": ide.findtext("ns:serie", default="", namespaces=NAMESPACE),
+        "data_emissao": ide.findtext("ns:dhEmi", default="", namespaces=NAMESPACE),
+        "valor_total_nf": total.findtext("ns:vNF", default="0", namespaces=NAMESPACE),
+        "emit_cnpj": emit.findtext("ns:CNPJ", default="", namespaces=NAMESPACE),
+        "emit_nome": emit.findtext("ns:xNome", default="", namespaces=NAMESPACE),
+        "dest_cnpj": dest.findtext("ns:CNPJ", default="", namespaces=NAMESPACE),
+        "dest_nome": dest.findtext("ns:xNome", default="", namespaces=NAMESPACE),
+        "infCpl": infCpl,
+        "ret_nf": extrair_nf_retorno(infCpl),
     }
 
     itens = []
     for det in infNFe.findall("ns:det", NAMESPACE):
         prod = det.find("ns:prod", NAMESPACE)
+        if prod is None:
+            continue # Pula itens sem informações de produto
+
+        qCom_str = prod.findtext("ns:qCom", default="0", namespaces=NAMESPACE)
+        vUnCom_str = prod.findtext("ns:vUnCom", default="0", namespaces=NAMESPACE)
+        vProd_str = prod.findtext("ns:vProd", default="0", namespaces=NAMESPACE)
+
+        try:
+            qCom = int(float(qCom_str))
+        except ValueError:
+            qCom = 0
+        try:
+            vUnCom = round(float(vUnCom_str), 2)
+        except ValueError:
+            vUnCom = 0.0
+        try:
+            vProd = round(float(vProd_str), 2)
+        except ValueError:
+            vProd = 0.0
+
         item = {
             **header,
-            "n_item":   det.attrib.get("nItem"),
-            "cProd":    prod.findtext("ns:cProd",    default="", namespaces=NAMESPACE),
-            "xProd":    prod.findtext("ns:xProd",    default="", namespaces=NAMESPACE),
-            "CFOP":     prod.findtext("ns:CFOP",     default="", namespaces=NAMESPACE),
-            "NCM":      prod.findtext("ns:NCM",      default="", namespaces=NAMESPACE),
-            "qCom":     int(float(prod.findtext("ns:qCom",    default="0", namespaces=NAMESPACE))),
-            "vUnCom":   round(float(prod.findtext("ns:vUnCom", default="0", namespaces=NAMESPACE)), 2),
-            "vProd":    round(float(prod.findtext("ns:vProd",  default="0", namespaces=NAMESPACE)), 2),
-            "xPed":     prod.findtext("ns:xPed",     default="", namespaces=NAMESPACE),
+            "n_item": det.attrib.get("nItem", ""),
+            "cProd": prod.findtext("ns:cProd", default="", namespaces=NAMESPACE),
+            "xProd": prod.findtext("ns:xProd", default="", namespaces=NAMESPACE),
+            "CFOP": prod.findtext("ns:CFOP", default="", namespaces=NAMESPACE),
+            "NCM": prod.findtext("ns:NCM", default="", namespaces=NAMESPACE),
+            "qCom": qCom,
+            "vUnCom": vUnCom,
+            "vProd": vProd,
+            "xPed": prod.findtext("ns:xPed", default="", namespaces=NAMESPACE),
             "nItemPed": prod.findtext("ns:nItemPed", default="", namespaces=NAMESPACE),
         }
         itens.append(item)
@@ -154,42 +245,54 @@ def parse_nfe_xml(xml_content, filename="arquivo.xml"):
     return itens
 
 
-# ─── Resolução de SKUs ────────────────────────────────────────────────────────
+# --- Resolução de SKUs ---
+def resolver_skus(df: pd.DataFrame, sku_set: set) -> pd.DataFrame:
+    """
+    Resolve SKUs em um DataFrame, priorizando 'cProd' e depois buscando em 'xProd'.
+    """
+    df_copy = df.copy() # Trabalha em uma cópia para evitar SettingWithCopyWarning
 
-def resolver_skus(df, sku_set):
-    def resolver(row):
+    def _resolver_single_row(row):
         cprod = str(row["cProd"]).strip().upper()
         if is_sku(cprod) and cprod in sku_set:
-            return pd.Series({"cProd": cprod, "sku_origem": "cProd"})
+            return cprod, "cProd"
         sku_encontrado = extrair_sku_do_xprod(row["xProd"], sku_set)
         if sku_encontrado:
-            return pd.Series({"cProd": sku_encontrado, "sku_origem": "xProd"})
-        return pd.Series({"cProd": row["cProd"], "sku_origem": "não resolvido"})
+            return sku_encontrado, "xProd"
+        return row["cProd"], "não resolvido"
 
-    resultado        = df.apply(resolver, axis=1)
-    df               = df.copy()
-    df["cProd"]      = resultado["cProd"]
-    df["sku_origem"] = resultado["sku_origem"]
-    return df
+    # Aplica a função linha a linha e atribui os resultados
+    resolved_data = df_copy.apply(_resolver_single_row, axis=1, result_type='expand')
+    df_copy["cProd"] = resolved_data[0]
+    df_copy["sku_origem"] = resolved_data[1]
+
+    return df_copy
 
 
-# ─── Check unicidade xPed ─────────────────────────────────────────────────────
-
+# --- Check unicidade xPed ---
 def check_unicidade_xped(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Verifica se há mais de um xPed distinto por NF em um DataFrame.
+    """
+    # Filtra linhas onde xPed não está vazio
+    df_filtered = df[df["xPed"].str.strip() != ""]
+
+    if df_filtered.empty:
+        return pd.DataFrame()
+
     resumo = (
-        df[df["xPed"].str.strip() != ""]
+        df_filtered
         .groupby(["arquivo", "numero_nf"])["xPed"]
-        .agg(lambda x: sorted(x.unique().tolist()))
+        .agg(lambda x: sorted(x.astype(str).str.strip().unique().tolist()))
         .reset_index()
         .rename(columns={"xPed": "xPed_valores"})
     )
     resumo["qtd_pedidos_distintos"] = resumo["xPed_valores"].apply(len)
-    resumo["xPed_valores"]          = resumo["xPed_valores"].apply(lambda v: " | ".join(v))
+    resumo["xPed_valores"] = resumo["xPed_valores"].apply(lambda v: " | ".join(v))
     return resumo[resumo["qtd_pedidos_distintos"] > 1].copy()
 
 
-# ─── Pedidos de Compra ────────────────────────────────────────────────────────
-
+# --- Pedidos de Compra ---
 def carregar_pedidos(file) -> pd.DataFrame:
     if file.name.endswith(".csv"):
         df = pd.read_csv(file, dtype=str)
@@ -198,180 +301,199 @@ def carregar_pedidos(file) -> pd.DataFrame:
 
     df.columns = df.columns.str.strip()
 
+    # Normaliza as colunas de chave ANTES de qualquer outra operação que possa depender delas
+    if "Purchase Order" in df.columns: # Nome da coluna do seu arquivo
+        df["_pedido_norm"] = df["Purchase Order"].apply(normalizar_chave)
+    else:
+        st.warning("Coluna 'Purchase Order' não encontrada no arquivo de pedidos. Verifique o cabeçalho.")
+        df["_pedido_norm"] = "" # Garante que a coluna exista para evitar KeyError
+
+    if "Item" in df.columns: # Nome da coluna do seu arquivo
+        df["_item_norm"] = df["Item"].apply(normalizar_chave)
+    else:
+        st.warning("Coluna 'Item' não encontrada no arquivo de pedidos. Verifique o cabeçalho.")
+        df["_item_norm"] = "" # Garante que a coluna exista para evitar KeyError
+
+    # Agora, o restante do processamento, incluindo as colunas numéricas
     colunas_numericas = [
-        "Qtd.pedido",
-        "Valor líquido da ordem",
-        "Quantidade a ser fornecida",
+        "Order Quantity",
+        "Net Order Value",
+        "Quantity to be Delivered",
     ]
     for col in colunas_numericas:
         if col in df.columns:
             df[col] = df[col].apply(parse_numero_br)
 
-    if "Valor líquido da ordem" in df.columns and "Qtd.pedido" in df.columns:
-        df["vUnit"] = (
-            df["Valor líquido da ordem"].astype(float)
-            / df["Qtd.pedido"].astype(float)
-        ).round(2)
+    if "Net Order Value" in df.columns and "Order Quantity" in df.columns:
+        df["vUnit"] = df.apply(
+            lambda row: round(row["Net Order Value"] / row["Order Quantity"], 2)
+            if row["Order Quantity"] not in [0, None] and row["Order Quantity"] is not None
+            else None,
+            axis=1
+        )
 
-    for col in ["Pedido de compras", "Item", "Material", "Numero_KIT"]:
+    # Outras colunas que precisam de strip, mas não de normalização numérica
+    for col in ["Material", "Numero_KIT"]:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
-
-    if "Pedido de compras" in df.columns:
-        df["_pedido_norm"] = df["Pedido de compras"].apply(normalizar_chave)
-    if "Item" in df.columns:
-        df["_item_norm"] = df["Item"].apply(normalizar_chave)
 
     return df
 
 
-# ─── Comparativo NF-e x PO ───────────────────────────────────────────────────
-
+# --- Comparativo NF-e x PO ---
 def comparar_nfe_po(df_nfe: pd.DataFrame, df_po: pd.DataFrame) -> pd.DataFrame:
     rows = []
 
-    for _, nfe_row in df_nfe.iterrows():
-        xped   = normalizar_chave(nfe_row.get("xPed",     ""))
-        nitem  = normalizar_chave(nfe_row.get("nItemPed", ""))
-        cprod  = str(nfe_row.get("cProd",  "")).strip().upper()
-        qcom   = nfe_row.get("qCom",   None)
+    # Garante que as colunas de normalização existam no df_po
+    # Estas linhas já estão no seu código e são importantes
+    if "_pedido_norm" not in df_po.columns:
+        df_po["_pedido_norm"] = df_po["Purchase Order"].apply(normalizar_chave)
+    if "_item_norm" not in df_po.columns:
+        df_po["_item_norm"] = df_po["Item"].apply(normalizar_chave)
+
+    for idx, nfe_row in df_nfe.iterrows(): # Adicionei idx para facilitar a depuração
+        xped = normalizar_chave(nfe_row.get("xPed", ""))
+        nitem_nfe_original = nfe_row.get("nItemPed", "") # Valor original da NF-e
+        nitem = normalizar_chave(nitem_nfe_original) # Valor normalizado da NF-e
+
+        cprod = str(nfe_row.get("cProd", "")).strip().upper()
+        qcom = nfe_row.get("qCom", None)
         vuncom = nfe_row.get("vUnCom", None)
+
+        # --- DEBUGGING: Imprima os valores antes da comparação ---
+        # Remova ou comente estas linhas após depurar
+        # st.write(f"NF-e Item {idx}: nItemPed original='{nitem_nfe_original}', normalizado='{nitem}'")
+        # if not df_po.empty:
+        #     st.write(f"PO Items normalizados disponíveis: {df_po['_item_norm'].unique().tolist()}")
+        # st.write(f"Procurando no PO por pedido='{xped}' e item='{nitem}'")
+        # ---------------------------------------------------------
 
         po_pedido = df_po[df_po["_pedido_norm"] == xped]
 
+        base_row = nfe_row.to_dict()
+        comparison_data = {
+            "po_pedido": xped,
+            "po_item": nitem, # Usar o nitem normalizado aqui
+            "po_material": "",
+            "po_nome_material": "",
+            "po_qtd_pedido": None,
+            "po_qtd_fornecida": None,
+            "po_vUnit": None,
+            "check_pedido": "",
+            "check_material": "",
+            "check_qtd": "",
+            "check_vunit": "",
+        }
+
         if po_pedido.empty:
-            rows.append({
-                **nfe_row.to_dict(),
-                "po_pedido":        xped,
-                "po_item":          nitem,
-                "po_material":      "",
-                "po_nome_material": "",
-                "po_qtd_pedido":    None,
-                "po_qtd_fornecida": None,
-                "po_vUnit":         None,
-                "check_pedido":     "❌ Pedido não encontrado no PO",
-                "check_material":   "",
-                "check_qtd":        "",
-                "check_vunit":      "",
-            })
+            comparison_data["check_pedido"] = "❌ Pedido não encontrado no PO"
+            rows.append({**base_row, **comparison_data})
             continue
 
+        # Aqui está a linha crítica:
         po_linha = po_pedido[po_pedido["_item_norm"] == nitem]
 
         if po_linha.empty:
-            itens_disponiveis = po_pedido["Item"].tolist()
-            rows.append({
-                **nfe_row.to_dict(),
-                "po_pedido":        xped,
-                "po_item":          nitem,
-                "po_material":      "",
-                "po_nome_material": "",
-                "po_qtd_pedido":    None,
-                "po_qtd_fornecida": None,
-                "po_vUnit":         None,
-                "check_pedido":     "✅ Pedido encontrado",
-                "check_material":   f"❌ Item {nitem} não encontrado no PO (disponíveis: {itens_disponiveis})",
-                "check_qtd":        "",
-                "check_vunit":      "",
-            })
+            itens_disponiveis = po_pedido["Item"].astype(str).tolist()
+            # Adicionei a lista de itens normalizados para melhor depuração
+            itens_disponiveis_norm = po_pedido["_item_norm"].astype(str).tolist()
+            comparison_data["check_pedido"] = "✅ Pedido encontrado"
+            comparison_data["check_material"] = (
+                f"❌ Item {nitem_nfe_original} (normalizado: {nitem}) não encontrado no PO "
+                f"(itens originais disponíveis: {', '.join(itens_disponiveis)}; "
+                f"itens normalizados disponíveis: {', '.join(itens_disponiveis_norm)})"
+            )
+            rows.append({**base_row, **comparison_data})
             continue
 
         po = po_linha.iloc[0]
 
-        po_material      = str(po.get("Material",              "")).strip().upper()
-        po_nome          = str(po.get("Nome do material",       "")).strip()
-        po_qtd           = po.get("Qtd.pedido",                 None)
-        po_qtd_fornecida = po.get("Quantidade a ser fornecida", None)
-        po_vunit         = po.get("vUnit",                      None)
+        po_material = str(po.get("Material", "")).strip().upper()
+        po_nome = str(po.get("Nome do material", "")).strip()
+        po_qtd = po.get("Order Quantity", None)
+        po_qtd_fornecida = po.get("Quantity to be Delivered", None)
+        po_vunit = po.get("vUnit", None)
 
-        try:
-            po_qtd           = float(po_qtd)           if po_qtd           is not None else None
-            po_qtd_fornecida = float(po_qtd_fornecida) if po_qtd_fornecida is not None else None
-            po_vunit         = float(po_vunit)         if po_vunit         is not None else None
-        except (ValueError, TypeError):
-            po_qtd = po_qtd_fornecida = po_vunit = None
+        comparison_data.update({
+            "po_material": po_material,
+            "po_nome_material": po_nome,
+            "po_qtd_pedido": po_qtd,
+            "po_qtd_fornecida": po_qtd_fornecida,
+            "po_vUnit": round(po_vunit, 2) if po_vunit is not None else None,
+            "check_pedido": "✅ Pedido encontrado",
+        })
 
-        check_pedido = "✅ Pedido encontrado"
-
-        check_material = (
+        # Check Material
+        comparison_data["check_material"] = (
             "✅ Material OK"
             if cprod == po_material
             else f"❌ Material divergente — NF: {cprod} | PO: {po_material}"
         )
 
+        # Check Quantidade
         if qcom is not None and po_qtd is not None:
             qcom_f = float(qcom)
             if qcom_f == po_qtd:
-                check_qtd = "✅ Qtd OK"
+                comparison_data["check_qtd"] = "✅ Qtd OK"
             elif qcom_f < po_qtd:
                 if po_qtd_fornecida is not None and po_qtd_fornecida == 0:
-                    check_qtd = (
+                    comparison_data["check_qtd"] = (
                         f"✅ Qtd OK (entrega parcial) — "
                         f"NF: {qcom_f:.0f} | Qtd. a fornecer: 0 "
                         f"| Qtd. pedido: {po_qtd:.0f}"
                     )
                 elif po_qtd_fornecida is not None and qcom_f <= po_qtd_fornecida:
-                    check_qtd = (
+                    comparison_data["check_qtd"] = (
                         f"✅ Qtd OK (entrega parcial) — "
                         f"NF: {qcom_f:.0f} | Qtd. a fornecer: {po_qtd_fornecida:.0f} "
                         f"| Qtd. pedido: {po_qtd:.0f}"
                     )
                 else:
                     qtd_ref = f"{po_qtd_fornecida:.0f}" if po_qtd_fornecida is not None else "não informada"
-                    check_qtd = (
+                    comparison_data["check_qtd"] = (
                         f"❌ Qtd divergente — "
                         f"NF: {qcom_f:.0f} | Qtd. a fornecer: {qtd_ref} "
                         f"| Qtd. pedido: {po_qtd:.0f}"
                     )
             else:
-                check_qtd = (
+                comparison_data["check_qtd"] = (
                     f"❌ Qtd excede o pedido — "
                     f"NF: {qcom_f:.0f} | Qtd. pedido: {po_qtd:.0f}"
                 )
         else:
-            check_qtd = "⚠️ Qtd não comparável"
+            comparison_data["check_qtd"] = "⚠️ Qtd não comparável"
 
+        # Check Valor Unitário
         if vuncom is not None and po_vunit is not None:
-            diff_pct = (
-                abs(float(vuncom) - po_vunit) / po_vunit * 100
-                if po_vunit != 0 else 0.0
-            )
-            check_vunit = (
+            if po_vunit == 0: # Evita divisão por zero
+                diff_pct = 0.0 if vuncom == 0 else 100.0 # Se PO é zero, e NF não, é 100% diferente
+            else:
+                diff_pct = abs(float(vuncom) - po_vunit) / po_vunit * 100
+
+            comparison_data["check_vunit"] = (
                 "✅ Valor unit. OK"
-                if diff_pct < 1
+                if diff_pct < 1 # Tolerância de 1%
                 else (
                     f"❌ Valor unit. divergente — "
                     f"NF: {float(vuncom):.2f} | PO: {po_vunit:.2f} ({diff_pct:.1f}%)"
                 )
             )
         else:
-            check_vunit = "⚠️ Valor unit. não comparável"
+            comparison_data["check_vunit"] = "⚠️ Valor unit. não comparável"
 
-        rows.append({
-            **nfe_row.to_dict(),
-            "po_pedido":        xped,
-            "po_item":          nitem,
-            "po_material":      po_material,
-            "po_nome_material": po_nome,
-            "po_qtd_pedido":    po_qtd,
-            "po_qtd_fornecida": po_qtd_fornecida,
-            "po_vUnit":         round(po_vunit, 2) if po_vunit is not None else None,
-            "check_pedido":     check_pedido,
-            "check_material":   check_material,
-            "check_qtd":        check_qtd,
-            "check_vunit":      check_vunit,
-        })
+        rows.append({**base_row, **comparison_data})
 
     df_result = pd.DataFrame(rows)
-    for col in ["_pedido_norm", "_item_norm"]:
-        if col in df_result.columns:
-            df_result.drop(columns=[col], inplace=True)
+    # Remove colunas temporárias
+    df_result.drop(columns=["_pedido_norm", "_item_norm"], errors='ignore', inplace=True)
     return df_result
 
 
-# ─── Check Composição de Kits (Aba 3) ────────────────────────────────────────
-
+# --- Check Composição de Kits (Aba 3) ---
 def check_composicao_kits(df_po: pd.DataFrame, df_zzsete: pd.DataFrame) -> pd.DataFrame:
+    """
+    Verifica a composição de kits nos pedidos de compra em relação à base zzsete.
+    """
     if df_zzsete.empty:
         return pd.DataFrame([{
             "Numero_KIT":     "—",
@@ -385,32 +507,36 @@ def check_composicao_kits(df_po: pd.DataFrame, df_zzsete: pd.DataFrame) -> pd.Da
             "check_qtd_kit":  "—",
         }])
 
+    # Cria um índice de kits na zzsete: CODPAI -> frozenset(PRODUTOS)
     zzsete_index = (
         df_zzsete
         .groupby("ZZ7_CODPAI")["ZZ7_PRODUT"]
-        .agg(lambda x: frozenset(x.str.upper().unique()))
+        .agg(lambda x: frozenset(x.astype(str).str.upper().unique()))
         .to_dict()
     )
 
     def buscar_kit_exato(mats: frozenset) -> str | None:
+        """Busca um kit na zzsete que tenha exatamente os materiais fornecidos."""
         for codpai, componentes in zzsete_index.items():
             if componentes == mats:
                 return codpai
         return None
 
     def buscar_melhor_match(mats: frozenset) -> tuple[str | None, int]:
+        """Busca o kit na zzsete com o maior número de componentes em comum."""
         melhor, melhor_n = None, 0
         for codpai, componentes in zzsete_index.items():
-            n = len(componentes & mats)
+            n = len(componentes & mats) # Interseção
             if n > melhor_n:
                 melhor_n = n
-                melhor   = codpai
+                melhor = codpai
         return melhor, melhor_n
 
+    # Filtra pedidos que possuem Numero_KIT
     df_com_kit = df_po[
         df_po["Numero_KIT"].notna()
-        & (df_po["Numero_KIT"].str.strip() != "")
-        & (df_po["Numero_KIT"].str.lower() != "nan")
+        & (df_po["Numero_KIT"].astype(str).str.strip() != "")
+        & (df_po["Numero_KIT"].astype(str).str.lower() != "nan")
     ].copy()
 
     if df_com_kit.empty:
@@ -427,52 +553,53 @@ def check_composicao_kits(df_po: pd.DataFrame, df_zzsete: pd.DataFrame) -> pd.Da
         }])
 
     df_com_kit["_kit_norm"] = df_com_kit["Numero_KIT"].apply(normalizar_kit)
-    df_com_kit["Material"]  = df_com_kit["Material"].astype(str).str.strip().str.upper()
+    df_com_kit["Material"] = df_com_kit["Material"].astype(str).str.strip().str.upper()
 
     rows = []
 
     for kit_id, grupo in df_com_kit.groupby("_kit_norm"):
-        materiais_po     = set(grupo["Material"].unique())
+        materiais_po = set(grupo["Material"].unique())
         materiais_frozen = frozenset(materiais_po)
 
-        # ── Kit identificado pela composição completa de materiais ─────────────
         kit_por_composicao = buscar_kit_exato(materiais_frozen)
+        kit_ref = None
+        kit_sugerido = None
+        componentes_ref = set()
+        check_kit = ""
 
         if kit_por_composicao is not None:
             # Composição exata encontrada
+            kit_ref = kit_por_composicao
             componentes_ref = zzsete_index[kit_por_composicao]
             if kit_por_composicao == kit_id:
-                check_kit    = "✅ Composição OK"
-                kit_sugerido = "—"
+                check_kit = "✅ Composição OK"
             else:
-                check_kit    = (
+                check_kit = (
                     f"⚠️ Composição OK mas Numero_KIT divergente — "
                     f"Pedido: {kit_id} | zzsete: {kit_por_composicao}"
                 )
                 kit_sugerido = kit_por_composicao
-            kit_ref = kit_por_composicao
-
         else:
             melhor_match, melhor_n = buscar_melhor_match(materiais_frozen)
-            kit_ref         = melhor_match or "—"
-            componentes_ref = zzsete_index.get(melhor_match, set())
+            kit_ref = melhor_match or "—"
+            componentes_ref = zzsete_index.get(melhor_match, frozenset())
 
             if melhor_match and materiais_frozen.issubset(componentes_ref):
-                faltando     = sorted(componentes_ref - materiais_frozen)
-                check_kit    = (
+                faltando = sorted(componentes_ref - materiais_frozen)
+                check_kit = (
                     f"⚠️ Kit incompleto no pedido — possível match: {melhor_match} "
                     f"| Faltando: {', '.join(faltando)}"
                 )
                 kit_sugerido = melhor_match
             else:
-                check_kit    = (
+                check_kit = (
                     f"❌ Composição não encontrada na zzsete "
                     f"(melhor match: {kit_ref} — "
                     f"{melhor_n}/{len(materiais_po)} componentes em comum)"
                 )
                 kit_sugerido = melhor_match or "—"
 
-        # ── Mapa qtd → materiais com essa quantidade ──────────────────────────
+        # Mapa qtd -> materiais com essa quantidade
         qtd_para_materiais: dict[float, set] = {}
         for _, linha in grupo.iterrows():
             qtd = linha.get("Qtd.pedido", None)
@@ -484,38 +611,39 @@ def check_composicao_kits(df_po: pd.DataFrame, df_zzsete: pd.DataFrame) -> pd.Da
                 except (ValueError, TypeError):
                     pass
 
-        # ── Para cada grupo de quantidade, identifica o kit específico ────────
-        # Isso evita usar componentes_ref do kit geral para validar subgrupos
+        # Para cada grupo de quantidade, identifica o kit específico
         qtd_para_kit_especifico: dict[float, str | None] = {}
-        qtd_para_comp_ref: dict[float, frozenset]        = {}
+        qtd_para_comp_ref: dict[float, frozenset] = {}
         for qtd_f, mats_qtd in qtd_para_materiais.items():
             kit_qtd = buscar_kit_exato(frozenset(mats_qtd))
             if kit_qtd:
                 qtd_para_kit_especifico[qtd_f] = kit_qtd
-                qtd_para_comp_ref[qtd_f]       = zzsete_index[kit_qtd]
+                qtd_para_comp_ref[qtd_f] = zzsete_index[kit_qtd]
             else:
                 # Usa componentes_ref do kit geral como fallback
                 qtd_para_kit_especifico[qtd_f] = None
-                qtd_para_comp_ref[qtd_f]       = componentes_ref
+                qtd_para_comp_ref[qtd_f] = componentes_ref
 
-        # ── Gera linhas por componente ────────────────────────────────────────
+        # Gera linhas por componente
         for _, linha in grupo.iterrows():
             mat = linha["Material"]
             qtd = linha.get("Qtd.pedido", None)
 
+            qtd_f = None
             try:
-                qtd_f = round(float(qtd), 4) if qtd is not None else None
+                if qtd is not None:
+                    qtd_f = round(float(qtd), 4)
             except (ValueError, TypeError):
-                qtd_f = None
+                pass
 
+            check_qtd_kit = "⚠️ Qtd não comparável"
             if qtd_f is not None:
-                mats_com_essa_qtd  = qtd_para_materiais.get(qtd_f, set())
-                comp_ref_qtd       = qtd_para_comp_ref.get(qtd_f, componentes_ref)
+                mats_com_essa_qtd = qtd_para_materiais.get(qtd_f, set())
+                comp_ref_qtd = qtd_para_comp_ref.get(qtd_f, componentes_ref)
                 kit_especifico_qtd = qtd_para_kit_especifico.get(qtd_f)
                 faltando_nessa_qtd = comp_ref_qtd - mats_com_essa_qtd
 
                 if not faltando_nessa_qtd:
-                    # Kit completo para essa quantidade
                     if kit_especifico_qtd and kit_especifico_qtd != kit_id:
                         check_qtd_kit = (
                             f"⚠️ Kit completo para qtd {qtd_f:.0f} "
@@ -529,8 +657,6 @@ def check_composicao_kits(df_po: pd.DataFrame, df_zzsete: pd.DataFrame) -> pd.Da
                         f"⚠️ Kit incompleto para qtd {qtd_f:.0f} "
                         f"— faltando: {', '.join(sorted(faltando_nessa_qtd))}"
                     )
-            else:
-                check_qtd_kit = "⚠️ Qtd não comparável"
 
             rows.append({
                 "Numero_KIT":     kit_id,
@@ -562,17 +688,10 @@ def check_composicao_kits(df_po: pd.DataFrame, df_zzsete: pd.DataFrame) -> pd.Da
     return pd.DataFrame(rows)
 
 
-# ─── Check Kits na NF-e (Aba 4) ──────────────────────────────────────────────
-
+# --- Check Kits na NF-e (Aba 4) ---
 def check_kits_nfe(df_nfe: pd.DataFrame, df_zzsete: pd.DataFrame) -> pd.DataFrame:
     """
-    Para cada item da NF-e:
-      1. Consulta ZZ7_SRINK na zzsete pelo cProd (ZZ7_PRODUT)
-         - Se ZZ7_SRINK == 'N' → Avulso OK, encerra para esse item
-         - Se ZZ7_SRINK == 'S' → continua validação de kit
-         - Se não encontrado na zzsete → Avulso (não cadastrado)
-      2. Agrupa por NF e verifica se os itens com SRINK=S formam kit completo,
-         parcial ou têm componentes faltando
+    Analisa os itens faturados na NF-e para verificar a composição de kits.
     """
     if df_zzsete.empty:
         return pd.DataFrame([{
@@ -593,25 +712,24 @@ def check_kits_nfe(df_nfe: pd.DataFrame, df_zzsete: pd.DataFrame) -> pd.DataFram
             "_eh_faltante":     False,
         }])
 
-    # Índice zzsete por produto: ZZ7_PRODUT → {ZZ7_CODPAI, ZZ7_SRINK}
-    # Um produto pode aparecer em múltiplos kits — pegamos o primeiro match
+    # Índice zzsete por produto: ZZ7_PRODUT -> {ZZ7_CODPAI, ZZ7_SRINK}
     srink_por_produto: dict[str, str] = {}
     for _, row in df_zzsete.iterrows():
         prod = str(row.get("ZZ7_PRODUT", "")).strip().upper()
         if prod and prod != "NAN":
             srink = str(row.get("ZZ7_SRINK", "N")).strip().upper()
-            if prod not in srink_por_produto:
+            if prod not in srink_por_produto: # Pega o primeiro SRINK se o produto estiver em múltiplos kits
                 srink_por_produto[prod] = srink
 
-    # Índice zzsete: ZZ7_CODPAI → frozenset(ZZ7_PRODUT)
+    # Índice zzsete: ZZ7_CODPAI -> frozenset(ZZ7_PRODUT)
     zzsete_index: dict[str, frozenset] = (
         df_zzsete[df_zzsete["ZZ7_PRODUT"].notna() & (df_zzsete["ZZ7_PRODUT"] != "NAN")]
         .groupby("ZZ7_CODPAI")["ZZ7_PRODUT"]
-        .agg(lambda x: frozenset(x.str.upper().unique()))
+        .agg(lambda x: frozenset(x.astype(str).str.upper().unique()))
         .to_dict()
     )
 
-    # Índice reverso: ZZ7_PRODUT → lista de ZZ7_CODPAI
+    # Índice reverso: ZZ7_PRODUT -> lista de ZZ7_CODPAI
     produto_para_kits: dict[str, list] = {}
     for codpai, produtos in zzsete_index.items():
         for prod in produtos:
@@ -621,38 +739,36 @@ def check_kits_nfe(df_nfe: pd.DataFrame, df_zzsete: pd.DataFrame) -> pd.DataFram
 
     for (arquivo, numero_nf), grupo_nf in df_nfe.groupby(["arquivo", "numero_nf"]):
 
-        # Separa itens por SRINK
-        itens_srink_s: dict[str, dict] = {}   # cProd → info, apenas SRINK=S
-        itens_srink_n: list            = []    # linhas com SRINK=N ou não cadastrado
+        itens_srink_s: dict[str, dict] = {}
+        itens_srink_n_ou_nao_cadastrado: list = []
 
         for _, row in grupo_nf.iterrows():
-            cp    = str(row["cProd"]).strip().upper()
+            cp = str(row["cProd"]).strip().upper()
             srink = srink_por_produto.get(cp, None)
 
             info = {
-                "n_item":   row.get("n_item",   ""),
-                "xProd":    row.get("xProd",    ""),
-                "qCom":     row.get("qCom",     None),
-                "vUnCom":   row.get("vUnCom",   None),
-                "vProd":    row.get("vProd",    None),
-                "xPed":     row.get("xPed",     ""),
+                "n_item":   row.get("n_item", ""),
+                "xProd":    row.get("xProd", ""),
+                "qCom":     row.get("qCom", None),
+                "vUnCom":   row.get("vUnCom", None),
+                "vProd":    row.get("vProd", None),
+                "xPed":     row.get("xPed", ""),
                 "nItemPed": row.get("nItemPed", ""),
                 "ZZ7_SRINK": srink if srink else "Não cadastrado",
             }
 
             if srink == "S":
-                if cp not in itens_srink_s:
+                if cp not in itens_srink_s: # Evita duplicidade se o mesmo cProd aparecer mais de uma vez na NF
                     itens_srink_s[cp] = info
             else:
-                # SRINK=N ou produto não encontrado na zzsete → avulso OK
-                itens_srink_n.append((cp, info, srink))
+                itens_srink_n_ou_nao_cadastrado.append((cp, info, srink))
 
-        # ── Linhas para itens SRINK=N ou não cadastrado ───────────────────────
-        for cp, info, srink in itens_srink_n:
+        # Linhas para itens SRINK=N ou não cadastrado
+        for cp, info, srink in itens_srink_n_ou_nao_cadastrado:
             if srink == "N":
                 status = "⚪ Avulso - OK"
                 observ = "Produto não requer composição de kit (ZZ7_SRINK=N)"
-            else:
+            else: # srink is None, ou seja, "Não cadastrado"
                 status = "⚪ Avulso - não cadastrado na zzsete"
                 observ = "Produto não encontrado na base zzsete"
 
@@ -674,34 +790,31 @@ def check_kits_nfe(df_nfe: pd.DataFrame, df_zzsete: pd.DataFrame) -> pd.DataFram
                 "_eh_faltante":     False,
             })
 
-        # ── Validação de kit para itens SRINK=S ───────────────────────────────
+        # Validação de kit para itens SRINK=S
         if not itens_srink_s:
             continue
 
         produtos_nf_s = frozenset(itens_srink_s.keys())
 
-        # Kits candidatos: qualquer kit que contenha pelo menos 1 produto da NF
         kits_candidatos: dict[str, frozenset] = {}
         for cp in produtos_nf_s:
             for kit in produto_para_kits.get(cp, []):
                 kits_candidatos[kit] = zzsete_index[kit]
 
         kits_completos = {k: v for k, v in kits_candidatos.items() if v.issubset(produtos_nf_s)}
-        kits_parciais  = {k: v for k, v in kits_candidatos.items() if k not in kits_completos}
+        kits_parciais = {k: v for k, v in kits_candidatos.items() if k not in kits_completos}
 
-        # Mapeia cada cProd ao melhor kit
         cprod_kit_map: dict[str, str] = {}
         for cp in produtos_nf_s:
             kits_cp_comp = [k for k, v in kits_completos.items() if cp in v]
-            kits_cp_parc = [k for k, v in kits_parciais.items()  if cp in v]
+            kits_cp_parc = [k for k, v in kits_parciais.items() if cp in v]
             if kits_cp_comp:
-                cprod_kit_map[cp] = kits_cp_comp[0]
+                cprod_kit_map[cp] = kits_cp_comp[0] # Pega o primeiro kit completo que contém o produto
             elif kits_cp_parc:
-                cprod_kit_map[cp] = kits_cp_parc[0]
+                cprod_kit_map[cp] = kits_cp_parc[0] # Pega o primeiro kit parcial que contém o produto
             else:
                 cprod_kit_map[cp] = "SEM_KIT"
 
-        # Linhas dos itens SRINK=S faturados
         itens_processados = set()
         for cp, info in itens_srink_s.items():
             if cp in itens_processados:
@@ -716,10 +829,10 @@ def check_kits_nfe(df_nfe: pd.DataFrame, df_zzsete: pd.DataFrame) -> pd.DataFram
             elif kit_id in kits_completos:
                 status = "✅ Kit completo"
                 observ = f"Kit {kit_id} — todos os componentes faturados"
-            else:
+            else: # kit_id está em kits_parciais
                 faltando = sorted(zzsete_index[kit_id] - produtos_nf_s)
-                status   = "⚠️ Possível falta de componentes"
-                observ   = f"Kit {kit_id} — faltando: {', '.join(faltando)}"
+                status = "⚠️ Possível falta de componentes"
+                observ = f"Kit {kit_id} — faltando: {', '.join(faltando)}"
 
             rows.append({
                 "numero_nf":        numero_nf,
@@ -767,18 +880,18 @@ def check_kits_nfe(df_nfe: pd.DataFrame, df_zzsete: pd.DataFrame) -> pd.DataFram
     return pd.DataFrame(rows)
 
 
-# ─── Layout ───────────────────────────────────────────────────────────────────
-
+# --- Layout Streamlit ---
 st.set_page_config(page_title="NF-e Parser", layout="wide")
 st.title("NF-e Parser")
 
+# Carrega arquivos auxiliares uma única vez
 sku_set, sku_df = carregar_sku_set()
-df_zzsete       = carregar_zzsete()
+df_zzsete = carregar_zzsete()
 
 if sku_set:
     st.caption(f"Tabela de SKUs carregada: {len(sku_set)} produtos ({SKU_FILE.name})")
 else:
-    st.warning("Arquivo skuProd.csv não encontrado. A coluna cProd será mantida como veio no XML.")
+    st.warning("Arquivo skuProd.csv não encontrado ou vazio. A resolução de SKUs será limitada.")
 
 if not df_zzsete.empty:
     st.caption(
@@ -786,7 +899,7 @@ if not df_zzsete.empty:
         f"{df_zzsete['ZZ7_CODPAI'].nunique()} kits / {len(df_zzsete)} componentes."
     )
 else:
-    st.warning("Arquivo zzsete.xlsx não encontrado. As abas 3 e 4 não estarão disponíveis.")
+    st.warning("Arquivo zzsete.xlsx não encontrado ou vazio. As abas 3 e 4 não estarão disponíveis.")
 
 aba_parser, aba_po, aba_kit, aba_nfe_kit = st.tabs([
     "📄 Parser NF-e",
@@ -817,13 +930,16 @@ with aba_parser:
             with st.spinner("Processando arquivos..."):
                 for f in uploaded_files:
                     try:
+                        # O conteúdo do arquivo deve ser lido como bytes para ET.fromstring
                         rows = parse_nfe_xml(f.read(), filename=f.name)
                         all_rows.extend(rows)
                     except Exception as e:
                         erros.append(f"{f.name}: {e}")
 
-            for erro in erros:
-                st.error(f"Erro: {erro}")
+            if erros:
+                st.error("Ocorreram erros no processamento de alguns arquivos:")
+                for erro in erros:
+                    st.write(f"- {erro}")
 
             if all_rows:
                 df = pd.DataFrame(all_rows)
@@ -853,7 +969,7 @@ with aba_parser:
                     st.success("✅ xPed único em todas as NFs processadas.")
 
                 st.success(
-                    f"{len(uploaded_files) - len(erros)} arquivo(s) processado(s) "
+                    f"{len(uploaded_files) - len(erros)} arquivo(s) processado(s) com sucesso "
                     f"— {len(df)} linha(s) extraída(s)."
                 )
                 st.dataframe(df, use_container_width=True)
@@ -881,6 +997,8 @@ with aba_parser:
                         file_name="nfe_itens.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
+            else:
+                st.warning("Nenhum dado foi extraído dos arquivos XML fornecidos.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -919,25 +1037,35 @@ with aba_po:
 
     if st.button("Comparar", type="primary", key="btn_po"):
 
+        df_nfe_to_compare = pd.DataFrame()
         if xml_files_po:
             all_rows, erros = [], []
-            for f in xml_files_po:
-                try:
-                    rows = parse_nfe_xml(f.read(), filename=f.name)
-                    all_rows.extend(rows)
-                except Exception as e:
-                    st.error(f"Erro ao processar {f.name}: {e}")
+            with st.spinner("Processando XMLs para comparação..."):
+                for f in xml_files_po:
+                    try:
+                        rows = parse_nfe_xml(f.read(), filename=f.name)
+                        all_rows.extend(rows)
+                    except Exception as e:
+                        erros.append(f"{f.name}: {e}")
+            if erros:
+                st.error("Ocorreram erros no processamento de XMLs para comparação:")
+                for erro in erros:
+                    st.write(f"- {erro}")
             if all_rows:
-                df_nfe = pd.DataFrame(all_rows)
+                df_nfe_to_compare = pd.DataFrame(all_rows)
                 if sku_set:
-                    df_nfe = resolver_skus(df_nfe, sku_set)
+                    df_nfe_to_compare = resolver_skus(df_nfe_to_compare, sku_set)
             else:
-                st.error("Nenhum XML válido processado.")
+                st.error("Nenhum XML válido processado para comparação.")
                 st.stop()
         elif usar_nfe_existente:
-            df_nfe = st.session_state["df_nfe"]
+            df_nfe_to_compare = st.session_state["df_nfe"]
         else:
-            st.error("Faça o upload dos XMLs de NF-e na Aba 1 ou aqui.")
+            st.error("Faça o upload dos XMLs de NF-e na Aba 1 ou aqui para comparar.")
+            st.stop()
+
+        if df_nfe_to_compare.empty:
+            st.error("Nenhum dado de NF-e disponível para comparação.")
             st.stop()
 
         if not po_file:
@@ -945,10 +1073,10 @@ with aba_po:
             st.stop()
 
         with st.spinner("Carregando pedidos e comparando..."):
-            df_po     = carregar_pedidos(po_file)
-            df_result = comparar_nfe_po(df_nfe, df_po)
+            df_po = carregar_pedidos(po_file)
+            df_result = comparar_nfe_po(df_nfe_to_compare, df_po)
 
-        divergentes_xped = check_unicidade_xped(df_nfe)
+        divergentes_xped = check_unicidade_xped(df_nfe_to_compare)
         if not divergentes_xped.empty:
             with st.expander(
                 f"⚠️ {len(divergentes_xped)} NF(s) com mais de um xPed distinto",
@@ -964,17 +1092,17 @@ with aba_po:
 
         st.divider()
 
-        total       = len(df_result)
+        total = len(df_result)
         ok_material = df_result["check_material"].str.startswith("✅").sum()
-        ok_qtd      = df_result["check_qtd"].str.startswith("✅").sum()
-        ok_vunit    = df_result["check_vunit"].str.startswith("✅").sum()
-        sem_pedido  = df_result["check_pedido"].str.startswith("❌").sum()
+        ok_qtd = df_result["check_qtd"].str.startswith("✅").sum()
+        ok_vunit = df_result["check_vunit"].str.startswith("✅").sum()
+        sem_pedido = df_result["check_pedido"].str.startswith("❌").sum()
 
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Itens na NF-e",          total)
+        c1.metric("Itens na NF-e", total)
         c2.metric("Pedidos não encontrados", sem_pedido)
-        c3.metric("Material OK",             f"{ok_material}/{total}")
-        c4.metric("Qtd OK",                  f"{ok_qtd}/{total}")
+        c3.metric("Material OK", f"{ok_material}/{total}")
+        c4.metric("Qtd OK", f"{ok_qtd}/{total}")
 
         st.divider()
 
@@ -982,6 +1110,7 @@ with aba_po:
             "Mostrar:",
             ["Todos", "Somente divergências", "Somente OK"],
             horizontal=True,
+            key="filtro_po_display"
         )
 
         if filtro == "Somente divergências":
@@ -1052,21 +1181,28 @@ with aba_kit:
             st.stop()
 
         if df_zzsete.empty:
-            st.error("Base zzsete.xlsx não encontrada na raiz do projeto.")
+            st.error("Base zzsete.xlsx não disponível. Verifique se o arquivo existe e não está vazio.")
             st.stop()
 
         with st.spinner("Verificando composição dos kits..."):
-            df_po_kit  = carregar_pedidos(po_file_kit)
+            df_po_kit = carregar_pedidos(po_file_kit)
             df_kit_res = check_composicao_kits(df_po_kit, df_zzsete)
 
+        # Métricas de kits
         kits_unicos = df_kit_res["Numero_KIT"].nunique()
-        ok_kits     = df_kit_res.groupby("Numero_KIT")["check_kit"].first().str.startswith("✅").sum()
-        err_kits    = df_kit_res.groupby("Numero_KIT")["check_kit"].first().str.startswith("❌").sum()
+        # Para contar kits OK/com divergência, precisamos agrupar pelo Numero_KIT
+        # e pegar o status do kit principal (check_kit)
+        kit_summary = df_kit_res.groupby("Numero_KIT")["check_kit"].first()
+        ok_kits = kit_summary.str.startswith("✅").sum()
+        err_kits = kit_summary.str.startswith("❌").sum()
+        warn_kits = kit_summary.str.startswith("⚠️").sum()
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Kits no pedido",  kits_unicos)
-        c2.metric("Composição OK",   ok_kits)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Kits no pedido", kits_unicos)
+        c2.metric("Composição OK", ok_kits)
         c3.metric("Com divergência", err_kits)
+        c4.metric("Com aviso", warn_kits)
+
 
         st.divider()
 
@@ -1078,10 +1214,11 @@ with aba_kit:
         )
 
         if filtro_kit == "Somente divergências":
-            kits_div    = df_kit_res[df_kit_res["check_kit"].str.startswith("❌")]["Numero_KIT"].unique()
-            df_kit_view = df_kit_res[df_kit_res["Numero_KIT"].isin(kits_div)]
+            # Inclui kits com '❌' ou '⚠️' no check_kit principal
+            kits_div_warn = kit_summary[kit_summary.str.startswith("❌") | kit_summary.str.startswith("⚠️")].index
+            df_kit_view = df_kit_res[df_kit_res["Numero_KIT"].isin(kits_div_warn)]
         elif filtro_kit == "Somente OK":
-            kits_ok     = df_kit_res[df_kit_res["check_kit"].str.startswith("✅")]["Numero_KIT"].unique()
+            kits_ok = kit_summary[kit_summary.str.startswith("✅")].index
             df_kit_view = df_kit_res[df_kit_res["Numero_KIT"].isin(kits_ok)]
         else:
             df_kit_view = df_kit_res
@@ -1144,46 +1281,58 @@ with aba_nfe_kit:
     if st.button("Analisar Kits na NF-e", type="primary", key="btn_aba4"):
 
         if df_zzsete.empty:
-            st.error("Base zzsete.xlsx não encontrada na raiz do projeto.")
+            st.error("Base zzsete.xlsx não disponível. Verifique se o arquivo existe e não está vazio.")
             st.stop()
 
+        df_nfe_aba4_to_analyze = pd.DataFrame()
         if xml_files_aba4:
             all_rows, erros = [], []
-            for f in xml_files_aba4:
-                try:
-                    rows = parse_nfe_xml(f.read(), filename=f.name)
-                    all_rows.extend(rows)
-                except Exception as e:
-                    st.error(f"Erro ao processar {f.name}: {e}")
+            with st.spinner("Processando XMLs para análise de kits..."):
+                for f in xml_files_aba4:
+                    try:
+                        rows = parse_nfe_xml(f.read(), filename=f.name)
+                        all_rows.extend(rows)
+                    except Exception as e:
+                        erros.append(f"{f.name}: {e}")
+            if erros:
+                st.error("Ocorreram erros no processamento de XMLs para análise de kits:")
+                for erro in erros:
+                    st.write(f"- {erro}")
             if all_rows:
-                df_nfe_aba4 = pd.DataFrame(all_rows)
+                df_nfe_aba4_to_analyze = pd.DataFrame(all_rows)
                 if sku_set:
-                    df_nfe_aba4 = resolver_skus(df_nfe_aba4, sku_set)
+                    df_nfe_aba4_to_analyze = resolver_skus(df_nfe_aba4_to_analyze, sku_set)
             else:
-                st.error("Nenhum XML válido processado.")
+                st.error("Nenhum XML válido processado para análise de kits.")
                 st.stop()
         elif usar_nfe_aba4:
-            df_nfe_aba4 = st.session_state["df_nfe"]
+            df_nfe_aba4_to_analyze = st.session_state["df_nfe"]
         else:
-            st.error("Faça o upload dos XMLs de NF-e na Aba 1 ou aqui.")
+            st.error("Faça o upload dos XMLs de NF-e na Aba 1 ou aqui para analisar kits.")
+            st.stop()
+
+        if df_nfe_aba4_to_analyze.empty:
+            st.error("Nenhum dado de NF-e disponível para análise de kits.")
             st.stop()
 
         with st.spinner("Analisando kits na NF-e..."):
-            df_aba4 = check_kits_nfe(df_nfe_aba4, df_zzsete)
+            df_aba4 = check_kits_nfe(df_nfe_aba4_to_analyze, df_zzsete)
 
-        df_itens  = df_aba4[~df_aba4["_eh_faltante"]]
-        kits_ok   = (df_itens["status_kit"] == "✅ Kit completo").sum()
+        df_itens = df_aba4[~df_aba4["_eh_faltante"]]
+        kits_ok = (df_itens["status_kit"] == "✅ Kit completo").sum()
         kits_parc = (df_itens["status_kit"] == "⚠️ Possível falta de componentes").sum()
         avulsos_ok = (df_itens["status_kit"] == "⚪ Avulso - OK").sum()
         avulsos_nc = (df_itens["status_kit"] == "⚪ Avulso - não cadastrado na zzsete").sum()
-        faltantes  = df_aba4["_eh_faltante"].sum()
+        avulsos_req_kit = (df_itens["status_kit"] == "⚠️ Avulso - requer kit mas sem match na zzsete").sum()
+        faltantes = df_aba4["_eh_faltante"].sum()
 
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Kits completos",           kits_ok)
-        c2.metric("Kits com falta",           kits_parc)
-        c3.metric("Avulsos OK (SRINK=N)",     avulsos_ok)
-        c4.metric("Avulsos não cadastrados",  avulsos_nc)
-        c5.metric("Componentes não faturados",faltantes)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Kits completos", kits_ok)
+        c2.metric("Kits com falta", kits_parc)
+        c3.metric("Avulsos OK (SRINK=N)", avulsos_ok)
+        c4.metric("Avulsos não cadastrados", avulsos_nc)
+        c5.metric("Avulsos requerem kit", avulsos_req_kit)
+        c6.metric("Componentes não faturados", faltantes)
 
         st.divider()
 
@@ -1204,7 +1353,7 @@ with aba_nfe_kit:
             ]["numero_nf"].unique()
             df_view4 = df_aba4[df_aba4["numero_nf"].isin(nfs_prob)]
         elif filtro_aba4 == "Somente kits completos":
-            nfs_ok   = df_itens[df_itens["status_kit"] == "✅ Kit completo"]["numero_nf"].unique()
+            nfs_ok = df_itens[df_itens["status_kit"] == "✅ Kit completo"]["numero_nf"].unique()
             df_view4 = df_aba4[df_aba4["numero_nf"].isin(nfs_ok) & ~df_aba4["_eh_faltante"]]
         elif filtro_aba4 == "Somente avulsos OK":
             df_view4 = df_aba4[df_aba4["status_kit"] == "⚪ Avulso - OK"]
